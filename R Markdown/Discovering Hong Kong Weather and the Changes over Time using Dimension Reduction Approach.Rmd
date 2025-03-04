@@ -1,0 +1,355 @@
+---
+title: "Discovering Hong Kong Weather and the Changes over Time Using Dimension Reduction Approach"
+author: "Tsoi Kwan Ma"
+date: "2025-01-21"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      toc_collapsed: true
+    toc_depth: 5
+    number_sections: false
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message = FALSE, warning = FALSE}
+library(corrplot)
+library(factoextra)
+library(gridExtra)
+library(psych)
+library(RColorBrewer)
+library(plotly)
+library(dplyr)
+```
+
+# Introduction
+
+Hong Kong is located coastally and the position gives it a subtropical maritime climate. As climate change continues to impact weather patterns, understanding the dynamics of local climate data has become increasingly important. The goal of this paper is to analyse weather in Hong Kong, spanning 2014 to 2023, to discover the patterns and relationships between key variables like temperature, humidity, and rainfall. By applying dimension reduction methods, it is hoped to simplify complex data and visualize how these weather factors interact. There will be evaluations on which algorithms will be the best to capture the underlying trends. Valuable insights into Hong Kong's climate are also expected.
+
+Ultimately, there is not only an enhancement on the understanding of local weather patterns in Hong Kong, but also a contribution to a broader discussion on the potential of data-driven climate modeling and the need for actionable insights in a world facing climate uncertainty.
+
+```{r, echo = FALSE, results = FALSE}
+setwd("/Users/matsoikwan/Library/Mobile Documents/com~apple~CloudDocs/University of Warsaw/Unsupervised Learning/Final Assignments/Hong Kong Weather")
+wind_speed <- read.csv("daily_SF_WSPD_ALL.csv", skip = 2, stringsAsFactors = FALSE)
+wind_direction <- read.csv("daily_SF_PDIR_ALL.csv", skip = 2, stringsAsFactors = FALSE)
+bright_sunshine <- read.csv("daily_KP_SUN_ALL.csv", skip = 2, stringsAsFactors = FALSE)
+humidity <- read.csv("daily_HKO_RH_ALL.csv", skip = 2, stringsAsFactors = FALSE)
+rainfall <- read.csv("daily_HKO_RF_ALL.csv", skip = 2, stringsAsFactors = FALSE)
+pressure <- read.csv("daily_HKO_MSLP_ALL.csv", skip = 2, stringsAsFactors = FALSE)
+cloud <- read.csv("daily_HKO_CLD_ALL.csv", skip = 2, stringsAsFactors = FALSE)
+temp <- read.csv("CLMTEMP_HKO_.csv", skip = 2, stringsAsFactors = FALSE)
+
+colnames(wind_speed) <- c("year", "month", "day", "wind_speed", "data_completeness")
+colnames(wind_direction) <- c("year", "month", "day", "wind_direction", "data_completeness")
+colnames(bright_sunshine) <- c("year", "month", "day", "bright_sunshine", "data_completeness")
+colnames(humidity) <- c("year", "month", "day", "humidity", "data_completeness")
+colnames(rainfall) <- c("year", "month", "day", "rainfall", "data_completeness")
+colnames(pressure) <- c("year", "month", "day", "pressure", "data_completeness")
+colnames(cloud) <- c("year", "month", "day", "cloud", "data_completeness")
+colnames(temp) <- c("year", "month", "day", "temp", "data_completeness")
+```
+
+# Datasets Selection, Preprocessing and Brief Reviews from Related Research
+
+To ensure the authenticity and accuracy of the data, the datasets used for this paper was sourced from [Hong Kong Observatory](https://www.hko.gov.hk/en/abouthko/opendata_intro.htm), which is the official weather forecast agency of the government of Hong Kong. There are various observation stations in Hong Kong to monitor weather conditions. To make it representative, the data observed from the station, which is located in the high-populated and business heart center and district of Hong Kong, Tsim Sha Tsui, are used (circled in yellow). The weather features from separate files, including, wind speed, wind direction, temperature, humidity, rainfall, pressure, cloud level, sunshine level, for the years 2014 to 2023 (10 years), are combined and merged into one single dataset. At the same time, outliers are not removed since they are required to assist figuring out the extreme weathers in Hong Kong. Missing values of each weather features are handled by replacing them with the median value for each month, since the weather features can exhibit strong seasonal patterns, so using the median of the same month (e.g. the average rainfall for January) can assume that the missing data corresponds to a period where the general seasonal trend is consistent and will not be affected by outliers.
+
+```{r, echo=FALSE, fig.cap="Hong Kong Map from Google", out.width = '80%'}
+knitr::include_graphics("/Users/matsoikwan/Library/Mobile Documents/com~apple~CloudDocs/University of Warsaw/Unsupervised Learning/Final Assignments/Hong Kong Weather/Hong Kong.png")
+```
+
+From many historical research papers, dimension reduction approaches, for example, Pincipal Component Analysis (PCA), Multidimensional Scaling (MDS), t-Distributed Stochastic Neighbour Embedding (t-SNE), and Uniform Manifold Approximation and Projection (UMAP), are usually used for assistance of weather prediction[^1]. Sometimes, when it comes to feature selection of weather data, PCA is also a popular choice[^2]. Therefore, in this paper, PCA and MDS will be applied to see which one is better and more flexible to achieve the targets of this paper since one of them is a linear and traditional technique but another one is opposite. Their effectiveness on dimension reduction is different owing to different computations. The dataset is also large so PCA is also ideal for scaling up with larger dataset which is not computationally expensive. Despite this, both algorithms will be carried out. And afterwards, there will be a comparison between linear and non-linear methods and be selected based on their performances and outputs.
+
+```{r, echo = FALSE, results = FALSE, message = FALSE, warning = FALSE}
+filter_dataset <- function(dataset) {
+  dataset <- subset(dataset, year %in% 2014:2023)
+  dataset[, c("year", "month", "day", colnames(dataset)[4])]
+}
+final <- filter_dataset(wind_speed)
+datasets <- list(wind_direction, bright_sunshine, humidity, rainfall, pressure, cloud, temp) # , wb_temp, uv_index, evaporation, solar_radiation, dp_temp, heat_index
+for (dataset in datasets) {
+  dataset <- filter_dataset(dataset)
+  final <- merge(final, dataset, by = c("year", "month", "day"), all = TRUE)
+}
+final[final == "NA"] <- NA
+final[] <- lapply(final, function(x) as.numeric(as.character(x)))
+str(final)
+print(sort(colSums(is.na(final)) / nrow(final) * 100))
+final$year_month <- paste(final$year, final$month, sep = "_")
+final <- final %>% group_by(year_month) %>% mutate(
+  rainfall = ifelse(is.na(rainfall), median(rainfall, na.rm = TRUE), rainfall)
+) %>%
+  ungroup()
+final <- final %>%
+  group_by(year_month) %>%
+  mutate(
+    wind_speed = ifelse(is.na(wind_speed), median(wind_speed, na.rm = TRUE), wind_speed)
+  ) %>%
+  ungroup()
+final <- final %>%
+  group_by(year_month) %>%
+  mutate(
+    wind_direction = ifelse(is.na(wind_direction), median(wind_direction, na.rm = TRUE), wind_direction)
+  ) %>%
+  ungroup()
+print(sort(colSums(is.na(final)) / nrow(final) * 100))
+final$Date <- as.Date(with(final, paste(year, month, day, sep = "-")), "%Y-%m-%d")
+final <- final[, !(names(final) %in% c("year", "month", "day", "year_month"))]
+data <- final[, 1:8]
+```
+
+## Correlations between Variables
+
+```{r}
+cor_matrix <- cor(data, method = c("pearson"))
+corrplot(cor_matrix, order ="alphabet", tl.cex = 0.6, type = "lower", addCoef.col = "black", number.cex = 0.5)
+```
+
+There are some key observations from the correlation matrix. There are some variables highly correlated, negatively correlated and weakly correlated features among those variables. For instance, "cloud", "bright_sunshine", and "temp", "pressure" are strongly negatively correlated with each other. Some features like "wind_speed" and "humidity" have minimal correlations with others, suggesting they may provide unique information. On the other hand, highly correlated features might reduce dimensions effectively via PCA since it captures variance and linear relationships. But MDS may be more effective to capture the non-linear relationship between the data points since most of the features are not highly correlated.
+
+# Methodology
+
+```{r, results = FALSE}
+data_z <- scale(data) # Data standardization
+```
+
+## Principal Component Analysis (PCA)
+
+```{r, echo = FALSE, results = FALSE}
+background <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), panel.background = element_blank(), plot.background = element_blank())
+```
+
+### Variability of Data
+
+```{r}
+pca <- prcomp(data_z, center = TRUE, scale = TRUE)
+summary(pca)
+a <- fviz_eig(pca, barfill = "skyblue", barcolor = "skyblue", linecolor = "black") + background
+b <- fviz_eig(pca, choice = 'eigenvalue', barfill = "skyblue", barcolor = "skyblue", linecolor = "black") + background
+grid.arrange(a, b, ncol = 2, top = "Percentage of Explained Variance (Left) and Eigenvalues (Right) on Y - axis")
+```
+
+```{r}
+plot(summary(pca)$importance[3, ], type = "b", xlab = "Principal Components", ylab = "Cumulative Variance (%)", main = "Percentage of Variance Explained for PCA")
+text(x = 1:length(summary(pca)$importance[3, ]), y = summary(pca)$importance[3, ], labels = round(summary(pca)$importance[3, ] * 100, 2),  pos = 3, cex = 0.8, col = "darkgreen", offset = 0.5)
+```
+
+The first principal component (Dim. 1) explains 33.9% of the variance, and the second (Dim. 2) explains 25.53%. All together, the first two components explain 59.43% of the variance. By adding the third component, the cumulative variance explained increases to 73.9%, which explains a large proportion of the variance in the dataset. A common rule is to retain enough components to explain at least 70%-90% of the total variance. Therefore, the percentage of cumulative variance explained suggests that the minimum dimensions (principal components) should be 3. It means that we can reduce the data to 3 dimensions to proceed to our the analysis while retaining most of the information.
+
+### Analysis of Loadings
+
+```{r}
+var <- get_pca_var(pca)
+pca_1_variable <- fviz_contrib(pca, "var", axes = 1, xtickslab.rt = 90, title = "Dimension - 1") + background
+pca_2_variable <- fviz_contrib(pca, "var", axes = 2, xtickslab.rt = 90, title = "Dimension - 2") + background
+pca_3_variable <- fviz_contrib(pca, "var", axes = 3, xtickslab.rt = 90, title = "Dimension - 3") + background
+grid.arrange(pca_1_variable, pca_2_variable, pca_3_variable, ncol = 3, top = 'Contribution of Variables to First Three Principal Components')
+
+a <- fviz_pca_var(pca, col.var = "darkgreen", axes = c(1, 2), title = "PC1 vs PC2") + background
+b <- fviz_pca_var(pca, col.var = "darkgreen", axes = c(1, 3), title = "PC1 vs PC3") + background
+c <- fviz_pca_var(pca, col.var = "darkgreen", axes = c(2, 3), title = "PC2 vs PC3") + background
+grid.arrange(a, b, c, ncol = 3, top = "Variable Loadings to PC1, 2 & 3")
+pca$rotation
+```
+
+The above graphs and biplots tells what each PC represents and how the dimensionality-reduced data space aligns with the original features of your dataset. For instance, for PC1, "humidity" (loading = 0.513) and "cloud" (loading = 0.51) are the most influential variables. In such case, it implies that PC1 represents "moisture" which separates data points based on conditions of high humidity/cloud cover. Similarly, for PC2, "pressure" has a high positive loading while "temp" has a high negative loading. It implies that PC2 represents "temperature-pressure" which distinguishes data points with high temperatures and low pressure from those with high pressure and low temperatures. PC3 is dominant by wind-related features. It implies that PC3 reflects "wind dynamics".
+
+```{r}
+principal(data_z, nfactors = 3, rotate = "varimax")
+```
+
+From the results above, we can also see that the rotated PCA has successfully simplified the dataset into three interpretable components that capture most of the variance.
+
+-   RC1: 2.49 (31% of the variance)
+-   RC2: 2.02 (25% of the variance)
+-   RC3: 1.40 (17% of the variance)
+
+All together, the three principal components explain 74% of the variance in the data which is a good fit.
+
+```{r}
+a <- fviz_pca_ind(pca, axes = c(1, 2), col.ind="cos2", geom = "point", gradient.cols = brewer.pal(9, "Paired"), title = "PC1 vs PC2") + background
+b <- fviz_pca_ind(pca, axes = c(1, 3), col.ind="cos2", geom = "point", gradient.cols = brewer.pal(9, "Paired"), title = "PC1 vs PC3") + background
+c <- fviz_pca_ind(pca, axes = c(2, 3), col.ind="cos2", geom = "point", gradient.cols = brewer.pal(9, "Paired"), title = "PC2 vs PC3") + background
+grid.arrange(a, b, c, ncol = 1, top = "Representation of Data Points Quality")
+```
+
+"Cos2" (Cosine squared values) is for evaluating how well the data points are represented in the PCA. It is significant to understand which data points are well-represented (fit closely) in the chosen dimensions (e.g. PC1 and PC2). The points with higher cos2 values will be colored differently which indicates they can be better represented in the PCA plot. From the grid, we can see that the data points are tightly clustered concentrated in the PCA plots. Also, the data points on the periphery usually have lower cos2 values. It proves that the they are fail to be better explained by the principal components. The outliers contributes less to overall variance and thus they may be at risk of missing out of analysis.
+
+## Multidimension Scaling (MDS)
+
+Manhattan distance is used because it may deal better with outliers than Euclidean distance generally.
+
+```{r, results = FALSE}
+distance_mds <- dist(data_z, method = "manhattan")
+distance_mds_transposed <- dist(t(data_z), method = "manhattan")
+matrix <- as.matrix(distance_mds_transposed)[,]
+mds <- cmdscale(distance_mds, eig = TRUE, k = 3)
+mds_transposed <- cmdscale(distance_mds_transposed, eig = TRUE, k = 3)
+```
+
+### Variability of Data
+
+```{r}
+cumulative_variance_mds <- cumsum(mds$eig[1:8]) / sum(mds$eig[1:8]) * 100
+plot(cumulative_variance_mds, type = "b", xlab = "Dimensions", ylab = "Cumulative Variance (%)", main = "Percentage of Variance Explained for MDS")
+text(x = 1:length(cumulative_variance_mds), y = cumulative_variance_mds, labels = round(cumulative_variance_mds, 2),  pos = 3, cex = 0.8, col = "darkgreen", offset = 0.5)
+```
+
+The first few dimensions capture most of the data's variability. As a case in point, around 65% is by the first two dimensions and around 80% is by the first three dimensions. It suggests that the data structure can be well-represented in first 3 dimensions, which is the minimum, without losing much information.
+
+```{r}
+mds_data <- as.data.frame(mds$points)
+cor(data_z, mds_data)
+plot(mds_transposed$points, main = "Relations between Variables", xlab = "Dimension 1", ylab = "Dimension 2", type='n')
+text(mds_transposed$points[, 1], mds_transposed$points[, 2], labels = colnames(matrix), cex = 0.5, col = "darkgreen")
+```
+
+Unlike PCA (Principal Component Analysis), MDS does not directly provide component loadings or variable contributions to specific dimensions. Therefore, it can be tried to compute correlations between the original variables and the MDS components to discover which variables of the dataset are emphasized in the reduced dimensions. The correlation outputs represent the first, second, and third dimensions of the MDS result. A high positive correlation (close to 1) means the variable is strongly positively related to the MDS component. A higher correlation between a variable and a dimension means that variable is more influential in determining the positioning of points along that dimension. For example, "wind_speed" has a correlation of 0.322 with MDS component V1, -0.369 with V2, and 0.521 with V3. This means "wind_speed" is most strongly related to V3. "Humidity" has a strong positive correlation (0.817) with V1 which indicates that "humidity" is one of the most important variables influencing the first dimension of the MDS results. The interpretations for the rest of the variables are similar. From the visualization of plots, the results from correlations can also be substituted to it. It is apparent that the distance between "cloud" and "humidity" is close and "temp" is outstanding.
+
+### Investigations of Fitness
+
+#### Eigenvalue-Based Stress Calculation
+
+For MDS, we can examine the stress or distortion in the low-dimensional representation. Lower stress values indicate a better representation of the data in the reduced dimensions. The rules are as follows:
+
+-   Stress values \< 0.1: Excellent fit to the dimensions
+-   0.1 ≤ Stress \< 0.2: Good fit to the dimensions
+-   0.2 ≤ Stress \< 0.3: Acceptable fit to the dimensions but may be loss of data
+-   Stress ≥ 0.3: Poor fit to the dimensions and cannot preserve relationships between data points adequately
+
+```{r}
+check_mds_stress <- function(data, max_dim = 8) {
+  distance_data <- dist(data, method = "manhattan")  
+  n_points <- nrow(data)
+  max_valid_dim <- min(max_dim, n_points - 1)
+  stress_values <- numeric(max_valid_dim)  
+  for (k in 2:max_valid_dim) {
+    mds <- cmdscale(distance_data, k = k, eig = TRUE)  # Perform MDS
+    stress <- sqrt(1 - sum(mds$eig[1:k]^2) / sum(mds$eig^2))
+    stress_values[k] <- stress
+    if (stress < 0.3) {
+      cat("Stress < 0.3 for dimension", k, "with stress value:", stress, "\n")
+    } else {
+      cat("Stress > 0.3 for dimension", k, "with stress value:", stress, "\n")
+    }
+  }
+  return(stress_values)
+}
+
+check_mds_stress(data_z)
+```
+
+The stress values consistently decrease when more dimensions are added. After dimension 3, the stress values are less than 0.3 which means that the quality of the dimensions are acceptable and 3 dimensions can be a good choice for maintaining a balance between simplicity and accuracy. It also suggests that the first 3 dimensions can explain a large proportion of the variance in the original data. They are able to preserve the original metric distances (actual distances) between data points well.
+
+#### Classical MDS Stress Calculation
+
+```{r}
+distance_original <- as.vector(dist(data_z, method = "manhattan"))
+distance_reconstructed <- as.vector(dist(mds$points))
+stress_cmdscale <- sqrt(sum((distance_original - distance_reconstructed)^2) / sum(distance_original^2))
+cat("Classical MDS Stress:", stress_cmdscale, "\n")
+```
+
+By calculating the Classical MDS Stress, it is able to compare the distances in the original data with those in the reduced dimensions. Since the result is close to 0, it indicates that MDS is doing a good job of preserving distances and relationship between data points in lower dimensions.
+
+#### Shepard Plots
+
+```{r}
+shepard_mds <- data.frame(original_distances = distance_mds, reduced_distances = dist(mds$points))
+plot(shepard_mds$original_distances, shepard_mds$reduced_distances, 
+     xlab = "Original Distances", ylab = "Reduced Distances", col = "darkgreen",
+     main = "Shepard Plot for MDS", pch = 19, cex = 0.5)
+abline(a = 0, b = 1, col = "red")  # 45-degree line indicating perfect preservation
+
+shepard_mds_transposed <- data.frame(original_distances = distance_mds_transposed, reduced_distances = dist(mds_transposed$points))
+plot(shepard_mds_transposed$original_distances, shepard_mds_transposed$reduced_distances, 
+     xlab = "Original Distances", ylab = "Reduced Distances", col = "darkgreen",
+     main = "Shepard Plot for MDS with Transposed Data", pch = 19, cex = 0.5)
+abline(a = 0, b = 1, col = "red")  # 45-degree line indicating perfect preservation
+```
+
+Shepard diagram can also assess how well the MDS map preserves original distances. The data points on shepard generally align with and is close to the 45-degree line which means it is a good fit. MDS can effectively preserve the original relationships between the attributes and even the individual data points.
+
+## Comparison and Decision on Model Selection
+
+PCA reduces data to principal components that explain most of the variance. MDS reduces data while preserving distances. Their outcomes are quite similar. However, when PCA can explain 73.9% of the variance with 3 dimensions, MDS can captures around 80% of variance. MDS is able to capture more data information than PCA. On the other hand, there is absence of some outliers on PCA plot since PCA fails to contain points that differ significantly from the majority of data points. The data is well-processed, with outliers likely removed or not present in the dataset. By comparing them according to the above analysis, MDS should be slightly better and more appropriate for dimension reduction if there is a need to understand dimensions like rainfall, temperature, and how data points map to weather patterns.
+
+# Analysis of Weather Trend based on MDS
+
+First and foremost, let's simply identify the outliers from the 2D plots. Based on the previous analysis and results from dimension reduction algorithms, in MDS, for dimension 1, it mainly represents humidity and cloud level. For dimension 2, it represents the temperature. For dimension 3, it captures the wind speed level.
+
+```{r}
+plot(mds$points, main = "2D MDS Plot", xlab = "Dimension 1", ylab = "Dimension 2", type='n')
+text(mds$points[, 1], mds$points[, 2], labels = final$Date, cex = 0.5, col = "darkgreen")
+abline(v = c(-18, 18), lty = 3, col = "red") 
+abline(h = c(-10, 10), lty = 3, col = "red")
+abline(v = c(0, 0), lty = 3, col = "blue") 
+abline(h = c(0, 0), lty = 3, col = "blue")
+plot(mds$points, main = "2D MDS Plot", xlab = "Dimension 1", ylab = "Dimension 3", type='n')
+text(mds$points[, 1], mds$points[, 3], labels = final$Date, cex = 0.5, col = "darkgreen")
+abline(v = c(-18, 18), lty = 3, col = "red")
+abline(h = c(-10, 10), lty = 3, col = "red")
+abline(v = c(0, 0), lty = 3, col = "blue") 
+abline(h = c(0, 0), lty = 3, col = "blue")
+plot(mds$points, main = "2D MDS Plot", xlab = "Dimension 2", ylab = "Dimension 3", type='n')
+text(mds$points[, 2], mds$points[, 3], labels = final$Date, cex = 0.5, col = "darkgreen")
+abline(v = c(-18, 18), lty = 3, col = "red")
+abline(h = c(-10, 10), lty = 3, col = "red")
+abline(v = c(0, 0), lty = 3, col = "blue") 
+abline(h = c(0, 0), lty = 3, col = "blue")
+```
+
+Using blue and red lines on the MDS plots in different dimensions is to analyze the distribution of weather data over time and identify any significant trends or outliers. The blue lines (both horizontal and vertical lines at x = 0 and y = 0) are likely acting as reference points for the data. The data points are concentrated in the middle and can be almost divided into 4 quarters. It implies that there might be a seasonal or periodic pattern in the weather data over the 10 years, with data points relatively evenly distributed around the origin. The fact that the points cluster near the center of the plot which indicates that the data across the years might exhibit a relatively stable or central tendency. In other words, most weather conditions in Hong Kong fall within a "normal" range. There is not really a extreme difference between 4 seasons. The red lines represent thresholds to identify outliers. From the plots, there are 4 outliers, which the data points represent the extreme weathers on the 4 specific dates, 2018-09-16, 2021-10-08, 2023-09-08, and 2023-10-09. They have partial tendencies to high level of wind speed (dimension 3) and high level of humidity and cloud (dimension 1).
+
+## Weather Changes over Time
+
+``` {r}
+mds_3d_plot <- plot_ly(data = as.data.frame(mds$points), x = ~V1, y = ~V2, z = ~V3, type = "scatter3d", mode = "markers", 
+                       text = ~final$Date, hoverinfo = "text", 
+                       marker = list(size = 4, color = ~scales::rescale(as.numeric(format(final$Date, "%Y")), to = c(0, 1)),
+                                     colorscale = "Viridis", colorbar = list(title = "Year", tickvals = c(0, 1),
+                                                                             ticktext = c(min(as.numeric(format(final$Date, "%Y"))), max(as.numeric(format(final$Date, "%Y")))), len = 0.5),
+                                     showscale = TRUE))
+mds_3d_plot <- layout(mds_3d_plot, title = "3D Plot for MDS",
+                      scene = list(xaxis = list(title = "1 Dimension"),
+                                   yaxis = list(title = "2 Dimension"),
+                                   zaxis = list(title = "3 Dimension")))
+mds_3d_plot
+```
+
+From the 3D plot, we can figure out that there are 4 prominent data points which are the outliers and they implies the extreme weathers happened in Hong Kong before. The dates labeled are same as those found from 2D plots. Reviewing the particular date, according to the official weather reports from Hong Kong Observatory, on 16 Spetember 2018 [(2018-09-16)](https://www.hko.gov.hk/en/wxinfo/pastwx/mws2018/mws201809.htm), there was a severe typhoon named Mangkhut. On 8 October 2021 [(2021-10-08)](https://www.hko.gov.hk/en/wxinfo/pastwx/mws2021/mws202110.htm), there was a super typhone named Lionrock. On 8 September 2023 [(2023-09-08)](https://www.hko.gov.hk/en/wxinfo/pastwx/mws2023/mws202309.htm), the weather in Hong Kong was to worsen with heavy rain and squally thunderstorms. And on 9 October 2023 [(2023-10-09)](https://www.hko.gov.hk/en/wxinfo/pastwx/mws2023/mws202310.htm), there was a super typhoon again named Koinu. During those strikes of typhoons and extreme weathers, a lot of properties and facilities were severely damaged, and even some people were injuried and killed due to the flooding caused by heavy rainfall and high level of wind speed[^3]. Additionally, the colours of the data point (dots) are mapped to the data. As the color changes from the beginning of the time range (2014) to the end (2023), we can visually identify the weather trend of Hong Kong over time. Early years (2014–2016) have cooler colors such as dark purple or blue. Later years (2021–2023) are represented by warmer colors like yellow. Despite the fact that the colour dots are mixed and concentrated in the middle, there is still a small shift in weather patterns over the years. The dots corresponding to the early years are partial toward to the middle (0) of 1 dimension and 3 dimension, which implies that in early years the temperatures were generally lower than later years and there were not many windy events happened. For the outliers, which represent the extreme weathers, are mostly lighter colours. It shows that in recent years more extremely severe weathers brought to Hong Kong.
+
+``` {r, message = FALSE, warning = FALSE}
+point1 <- mds$points[which(final$Date == as.Date("2021-10-08")), ]
+point2 <- mds$points[which(final$Date == as.Date("2014-12-17")), ]
+line_text <- c("2021-10-08", "2014-12-17")
+mds_3d_plot <- mds_3d_plot %>%
+  add_trace(x = c(point1[1], point2[1]), y = c(point1[2], point2[2]), z = c(point1[3], point2[3]),
+            type = "scatter3d", mode = "lines", 
+            line = list(color = "red", width = 4), 
+            text = line_text, 
+            hoverinfo = "text",
+            name = "Red Line between Points", showlegend = FALSE)
+mds_3d_plot
+```
+
+The 3D plot also shows an interesting pattern for the Hong Kong weather in recent years. Referring to the red line, when the humidity is low, the wind level will also be low, while the temperatures are quite similar. It indicates that in the same season, it's entirely possible for low humidity, low wind speeds, and moderate temperatures to occur, or conversely, for higher humidity and stronger winds to happen. It may be due to the dynamic nature of weather systems in Hong Kong which can create different combinations of weather patterns within similar months, or the effect of climate changes to Hong Kong.
+
+# Conslusion
+
+While PCA can indeed provide loadings and contributions between variables and the first few dimensions, MDS offers a slightly better representation of the data and is more suited for understanding weather trends, especially considering its ability to preserve the distances between data points. It is the more interpretably rich and intuitive method for understanding how weather features drive changes in the data, making it the better choice for the goal of visualizing and analyzing how weather changes over time in Hong Kong and identifying extreme weather days. The reduced dimensions to 3 help in understanding the relationships between key weather variables as well as offering insights into long-term weather patterns of Hong Kong. From the overall analysis in 2D and 3D, the weather data shows a clear seasonal division. It suggests that certain weather patterns (e.g. monsoon, cold fronts, or dry periods) repeat every year in roughly the same pattern. The outliers can be examined in more detail to understand what caused those extreme weather events, and obviously the extreme weathers in Hong Kong are usually about typhoones and storms. Data reminds us that extremely severe weather disasters can occur in Hong Kong. Besides, typhoons always play a role in bringing extremely severe weather to Hong Kong, triggering many record-breaking storm surges and causing severe flooding in many areas. It is believed that everyone should be aware of the awe of nature's power.
+
+# Limitations and Concerns
+
+There might be a variation on the accuracy of the results from analysis. The data are based on and retrieved from only one representative district in Hong Kong. The diversity of microclimates due to Hong Kong's geography (e.g. urban heat islands, coastal areas vs. mountainous regions) can complicate data analysis, as the weather may vary significantly over short distances. Moreover, the historical data is limited. Some of the data are missing and they are filled with the median which may affect the data quality. Gaps in data collection or discrepancies in records over time can affect the accuracy of trend analysis. Longer term of data should be preferred for more accurate outcomes.
+
+
+
+[^1]: A Multidimensionality Reduction Approach to Rainfall Prediction - <https://arrow.tudublin.ie/cgi/viewcontent.cgi?article=1226&context=scschcomart>
+
+[^2]: Feature selection of weather data with interval principal component analysis - <https://ieeexplore.ieee.org/document/7551600?denied=>
+
+[^3]: Heaviest rainfall in more than a century floods and paralyzes Hong Kong - <https://www.nbcnews.com/news/world/hong-kong-record-rainfall-flooding-black-storm-hits-rcna104025>

@@ -1,0 +1,322 @@
+---
+title: "Stolen-value-driven Analysis on Cargo Theft in USA using Association Rules"
+author: "Tsoi Kwan Ma"
+date: "2025-02-01"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      toc_collapsed: true
+    toc_depth: 5
+    number_sections: false
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())  # Clear the environment
+```
+
+```{r, message = FALSE, warning = FALSE}
+library(networkD3)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(RColorBrewer)
+library(pheatmap)
+library(arules)
+library(arulesViz)
+```
+
+# Introduction
+
+Cargo theft presents a sinificant threat to supply chain security which affects economic stability and the public safety. According to the definition by the Federal Bureau of Investigation (FBI)[^1], cargo theft includes, but is not restricted to the theft of items, personal property, cash, or luggage that makes up, entirely or partially, a commercial freight shipment in transit. The FBI carefully monitors cargo theft cases throughout the United States and gathers comprehensive yearly data to recognize patterns and trends. This paper will utilize two techniques for association rule mining, specifically the Apriori and ECLAT algorithms, to identify frequent patterns and relationships in the cargo theft incidents data in 2023. The findings can help identify and understand the key factors that influence the value of stolen cargo in theft incidents. It is hoped to identify patterns or scenarios associated with low, moderate, high, and very high stolen value incidents. The comprehensive pattern discovery will provide insights into the underlying factors contributing to different levels of cargo theft values and understand its various dimensions, including the locations prone to cargo theft, financial losses, types of cargo most frequently stolen, characteristics and demographic patterns of offenders. It is also possible to find out some rare patterns showing the level of stolen values of cargo items. After investigating the financial impact of cargo theft by correlating theft incidents with the value of stolen goods, with the aids of visualizations to present the findings in a clear and concise manner, it is believed that there can be some actionable strategies to minimize theft based on the stolen-value-driven analysis.
+
+```{r, echo=FALSE, fig.cap = "Cargo in USA (Image source retrieved from FBI’s official website)", out.width = '80%'}
+knitr::include_graphics("/Users/matsoikwan/Library/Mobile Documents/com~apple~CloudDocs/University of Warsaw/Unsupervised Learning/Final Assignments/CT_2013_2023/Cargo in USA.png")
+```
+
+```{r, echo = FALSE, results = FALSE}
+setwd("/Users/matsoikwan/Library/Mobile Documents/com~apple~CloudDocs/University of Warsaw/Unsupervised Learning/Final Assignments/CT_2013_2023")
+data <- read.csv("CT_2013_2023.csv", na.strings = c("", "NA"))
+data <- data[, !names(data) %in% c("recovered_flag", "ori", "pub_agency_name", "region_name", "agency_type_name", "population_group_code", "offense_code", "victim_type_code", "location_code", "weapon_code", "prop_desc_code", "prop_desc_code.1", "date_recovered", "pub_agency_unit", "state_abbr")]
+data <- subset(data, data_year == 2023)
+summary(data$stolen_value)
+```
+
+# Datasets Selection, Preprocessing and Brief Reviews from Related Research
+
+To ensure the authenticity and accuracy of the data, the dataset used for this paper was sourced from [official FBI's Crime Data Explorer](https://cde.ucr.cjis.gov/LATEST/webapp/#/pages/downloads). The raw cargo theft dataset in 2023 is used and it provides a wealth of information on cargo theft incidents, including detailed fields like offense codes, weapon types, property descriptions, and stolen/recovered values. Many fields, such as "offense_code", "location_code", and "weapon_code" pose the same information as "location_name", "state_name", etc, since they just present the correlated names as codes. Therefore, those relevant "code" columns are removed and leave the "name" columns for essential analysis and better understanding. On the other hand, redundant and irrelevant columns like "identifier" were removed to streamline the analysis. Some categorical variables are standardized and cleaned to ensure consistency. Additionally, since the target "stolen_value" is numeric, it is necessary to categorize the stolen values into four levels: Low, Moderate, High, and Very High, following a logical binning strategy based on value ranges and distribution. Similar to recovery values, they are categorized into three parts: Not recovered, Partial recovered, and Recovered. For offenders' ages, as reference to the research about age groups[^2], there will be 4 groups of age intervals: Teenager, Young Adult, Middle-aged Adult, and Old Adult. This categorization helps to simplify the rules mining and allows for a clearer comparison of factors influencing thefts. The following bullet points are the details of the categorization:
+
+For stolen value: 
+
+- "Low": 0 – 1000 (Low-value thefts which covers around the median)
+- "Moderate": 1001 – 5000 (Middle range which is up to the 80% quantile)
+- "High": 5001 – 50000 (High-value thefts which are reasonable upper limit for analysis)
+- "Very High": > 50000 (Extremely high-value thefts which are separated from potential outliers)
+
+For recovered value:
+
+- "Not recovered": 0 (No recovery from the stolen item / value)
+- "Partial recovered": Recovered value < Stolen value (Some recovery from the stolen item / value)
+- "Recovered": Same value as stolen item
+
+For offender age: 
+
+- "Teenager": < 19
+- "Young Adult": 20 - 39
+- "Middle-aged Adult": 40 - 59
+- "Old Adult": > 60
+
+Attributes information and meanings:
+
+- Method of Theft "offense_name": Cargo theft cases and understand theft categories
+- Location of Theft "location_name": Theft locations such as warehouses, transport hubs, etc
+- Type of Cargo "prop_desc_name": Property involved in theft, particularly cargo items
+- Value of Cargo "stolen_value" and "recovered_value": Monetary value of stolen and recovered value goods (categorized as whether stolen goods were recovered)
+- Geographic Location "state_name", "county_name" and "division_name": Geographic patterns
+- Detail of Thief "offender_race", "offender_ethnicity", "offender_age", and "offender_sex": Offender's profile
+- Detail of Victim "victim_type_name": Who / what was targeted in the theft
+- Population "population_group_desc": Socio-economic context of the affected area
+- Weapon Used "weapon_name": If applicable if force was involved
+
+From many historical research papers, association rules mining has been being a popular method for crime analysis. For example, Apriori algorithm was used to explore the association rules between offenders' profiles and historical criminal cases in USA in 2013[^3]. It is also possible that by Apriori, the rules can be used for the prediction of the crime an individual criminal is likely to commit[^4]. Furthermore, FP-Growth algorithm was employed to investigate the patterns and trends in criminal activities in Ukraine between 2012 and 2023[^5]. Sometimes the association rule mining algorithms can be assisted with clustering algorithms to effectively discover criminal suspects and it can actually have great generalizability to predict criminal suspects[^6].
+
+In this paper, ECLAT and Apriori algorithms will be applied to identify the factors that contribute to different levels of stolen values in cargo theft incidents. ECLAT is used before Apriori to help understand the structure of overall frequent combinations before generating rules for definded targets. It is expected that Eclat and Apriori do not give the same results because they focus on different aspects of the data, which are frequent itemsets and association rules seperately. Both algorithms in this paper can explore the data more comprehensively.
+
+```{r, results = FALSE}
+# Categorize recovered_value based on the conditions
+data$recovered_value <- ifelse(data$recovered_value == 0, "Not recovered", 
+                               ifelse(data$recovered_value < data$stolen_value, "Partial recovered", 
+                                      ifelse(data$recovered_value == data$stolen_value, "Recovered", 
+                                             "Unknown Recovery")))
+# Categorize offender_age based on the conditions
+data$offender_age <- ifelse(data$offender_age < 19, "Teenager", 
+                            ifelse(data$offender_age < 40, "Young Adult", 
+                                   ifelse(data$offender_age < 59, "Middle-aged Adult",
+                                          ifelse(data$offender_age >= 60, "Old Adult", NA))))
+# Categorize stolen_value based on distribution
+data$stolen_value <- ifelse(data$stolen_value <= 1000, "Low", 
+                               ifelse(data$stolen_value <= 5000, "Moderate", 
+                                      ifelse(data$stolen_value <= 50000, "High", 
+                                             "Very High")))
+```
+
+```{r, echo = FALSE, results = FALSE, message = FALSE, warning = FALSE}
+data <- data[!is.na(data$stolen_value), ]
+data <- data %>% mutate(offender_race = case_when(offender_race == "Not Specified" ~ "Race Not Specified",
+                                                  offender_race == "Unknown" ~ "Race Unknown", 
+                                                  TRUE ~ offender_race))
+data <- data %>% mutate(offender_ethnicity = case_when(offender_ethnicity == "Not Specified" ~ "Ethnicity Not Specified",
+                                                  offender_ethnicity == "Unknown" ~ "Ethnicity Unknown", 
+                                                  TRUE ~ offender_ethnicity))
+data <- data %>% mutate(offender_ethnicity = case_when(offender_ethnicity == "Not Specified" ~ "Ethnicity Not Specified",
+                                                       offender_ethnicity == "Unknown" ~ "Ethnicity Unknown", 
+                                                       TRUE ~ offender_ethnicity))
+data <- data %>% mutate(victim_type_name = case_when(victim_type_name == "Other" ~ "Victim Type Other",
+                                                     victim_type_name == "Unknown" ~ "Victum Type Unknown", 
+                                                       TRUE ~ victim_type_name))
+data <- data %>% mutate(location_name = case_when(location_name == "Not Specified" ~ "Location Not Specified",
+                                                       location_name == "Other/Unknown" ~ "Location Other/Unknown", 
+                                                       TRUE ~ location_name))
+data <- data %>% mutate(weapon_name = case_when(weapon_name == "None" ~ "Weapon None", 
+                                                     weapon_name == "Other" ~ "Weapon Other",
+                                                     weapon_name == "Unknown" ~ "Weapon Unknown", 
+                                                     TRUE ~ weapon_name))
+data <- data %>% mutate(prop_desc_name = case_when(prop_desc_name == "Other" ~ "Stolen Other",
+                                                     prop_desc_name == "Weapons-Other" ~ "Stolen Weapons-Other", 
+                                                     TRUE ~ prop_desc_name))
+data$population_group_desc <- gsub("Cities 1,000,000 or over", "Cities 1000000 or over", data$population_group_desc)
+data <- data[, 2:16]
+data[] <- lapply(data, as.factor)
+str(data)
+summary(data$stolen_value)
+summary(data$recovered_value)
+summary(data$offender_age)
+head(sort(summary(data$prop_desc_name), decreasing = TRUE), 6)
+write.csv(data, file="CT2023.csv", row.names = FALSE)
+```
+
+# Methodology
+
+## Dissimilarity
+
+In order to make the data suitable for association rules mining, the data is loaded in basket format and then creates a sparse matrix of transactions.
+
+```{r, results = FALSE, message = FALSE, warning = FALSE}
+transactions <- read.transactions("CT2023.csv", format = "basket", sep = ",", skip = 1)
+selections <- transactions[, itemFrequency(transactions) > 0.2]
+```
+
+```{r}
+itemFrequencyPlot(transactions, topN = 10, type = "absolute", main = "Item Frequency (Absolute)", ylab = "Item Frequency", xlab = "Item Name", col = "darkred")
+round(dissimilarity(selections, which = "items"), 2)
+pheatmap(as.matrix(dissimilarity(selections, which = "items")), symm = TRUE, main = "Item Dissimilarity Heatmap", color = colorRampPalette(brewer.pal(9, "Paired"))(50), border_color = NA)
+```
+
+Before applying association rules, there might be a need to understand the dataset's structure better and improve the quality of patterns. It’s a worthwhile addition to the association rules pipeline. There are a lot of items and transactions in the data. By grouping items or transactions based on their similarities and dissimilarities using Jaccard Dissimilarity, which is an useful metric when the data is sparse, we can identify clusters of items that behave similarly and understand item relationships. After filtering the items that appear in more than 20% of transactions, there are frequently occurring and significant items and it is able to measures how many items two transactions have in common relative to their union. The lower values in dissimilarity matrix indicate items are often bought together while higher values suggest less association. From the results, it tells that there are several items with high dissimilarity. It may be rare to see them appearing together as antecedents in the association rules. "Individual", "Low" and "Not Recovered" (0.34 - 0.38) co-occur frequently. It could mean that the cargo stolen values classified as “Low” often cannot be recovered after investigation and the victims are usually independent. "Business" and "Theft From Motor Vehicle" (0.89) indicates these two rarely occur together. Perhaps the victims in cargo theft incidents categorized as business entities rarely involve in the theft from motor vehicles. It may imply that the business cargo are large which is difficult to be robbed by motor vehicles. Meanwhile, the heat map helps visualize relationships among items or transactions, and dissimilarity matrix. Clusters of similar items appear as blocks of similar colors which helps identify related items visually.
+
+## ECLAT
+
+```{r, results = FALSE}
+itemsets <- eclat(transactions, parameter = list(supp = 0.25, maxlen = 10))
+```
+
+```{r}
+inspect(sort(itemsets, by = "support", decreasing = TRUE))
+```
+
+ECLAT algorithm here is used for preliminary rules mining. Frequent itemsets are firstly being experimented with adjusting and controling the support and maximum sizes of output. High support itemsets indicate strong common patterns for the occurrence of cargo thefts. Referring to the previous dissimilarity matrix, it is already known that "Low", "Not Recovered" and "Individual" have high similarity. From the general observations of the results, there are some frequent combinations like {Low, Not recovered} (0.604) and {Individual, Low, Not recovered} (0.455). It implies that low-value cases involved individuals often result in items not being recovered. And geographically, around 34% of incidents occurred in the South Atlantic region.
+
+### Specific Patterns
+
+```{r, results = FALSE}
+closed_set <- eclat(transactions, parameter = list(supp = 0.001, maxlen = 5, target = "closed frequent itemsets"))
+```
+
+```{r}
+inspect(sort(closed_set, by = "support", decreasing = FALSE)[1:5])
+```
+
+There are itemsets that appear frequently but adding any extra item would decrease their frequency. They are specific patterns. In the results, all itemsets have the same support of 0.001000829 which means each of these itemsets appears in approximately 0.1% of the transactions. All these itemsets have a very low support of 0.001% which means that they appear only once in about 1000 transactions. However, at the same time, the redundancy are reduced and it focuses on unique and informative itemsets, and the co-occurrence of some items makes them interesting as association rules. As a case in point, there were pets as cargo items being the thefts. These itemsets seem to involve specific grographical locations, demographic groups, and cargo item categories.
+
+### General Rules from Itemsets
+
+Using "ruleInduction" can generate rules from the frequent itemsets identified by ECLAT. It allows to have a brief review on the strongest patterns.
+
+
+```{r, results = FALSE}
+rules <- ruleInduction(itemsets, transactions, confidence = 0.5)
+```
+
+```{r}
+inspect(sort(rules, by = "confidence", decreasing = TRUE)[1:10])
+```
+
+The rules with high confidence, for example the first few rules, indicate strong relationships between items. For instance, when “Low” is present, “Not recovered” is very likely to appear, and vice versa. The rules from LHS to RHS provide some insights into how the presence of certain items or conditions influences the occurrence of others in the transaction dataset. Yet, the rules are general and not diverse. It is hard to interpret and evaluate and factors causing the stealing of different values of cargo items. Therefore, Apriori algorithm is used for more specific rules mining by adjusting the support and confidence level.
+
+## Apriori
+
+After obtaining insights (frequent itemsets) from ECLAT, we can use Apriori to create targeted association rules for different categories of stolen values. The consequent (RHS) is the specific categories of stolen values, which are "Low", "Moderate", "High", and "Very High".
+
+### Low Stolen Value
+
+```{r, warning = FALSE, message = FALSE}
+ap_Low <- apriori(transactions, parameter = list(supp = 0.1, conf = 0.5), appearance = list(rhs = c("Low"), default = "lhs"), control = list(verbose = F))
+ap_Low <- sort(ap_Low, by = "confidence", decreasing = TRUE)
+inspect(head(ap_Low))
+plot(ap_Low, measure = c("support", "lift"), shading = "confidence", main = "Scatter Plot for 48 Rules on Contributing Low Stolen Values")
+```
+
+From the results, high confidence values (above 80%) suggest strong relationships between the left-hand side (lhs) conditions and the right-hand side (“Low”). The most common and strong association is between “Individual”, “Not recovered”, and “Theft From Motor Vehicle”, and the likelihood of having a low stolen cargo value. These combinations suggest that if these conditions hold, it’s quite likely that the stolen value is low. For example, from the first rule, when the cargo items owned by individuals are robbed from motor vehicles and ultimately cannot be recovered, there is an 84.78% chance that the stolen value of cargo is low. The lifts of the rules are all higher than 1 and there are a huge amount of count. It means that the rules are reliable and common. These three conditions are associated with low cargo theft values. 
+
+Besides, from the scatter plot, the shading represents the confidence of the rules. Confidence is the likelihood that the rhs will occur given the lhs. The color shading shows how strong or weak the confidence is for each rule. Darker shades indicates higher confidence. Lighter shades indicates lower confidence. The points in the scatter plot that are high on the y-axis (high lift) with dark shading (high confidence), but a bit spread out. It still indicates the rule are frequent, strongly associated with low stolen cargo values, and reliable.
+
+### Moderate Stolen Value
+
+```{r, warning = FALSE, message = FALSE}
+ap_Moderate_1 <- apriori(transactions, parameter = list(supp = 0.001, conf = 0.08), appearance = list(rhs = c("Moderate"), default = "lhs"), control = list(verbose = F))
+ap_Moderate_1 <- sort(ap_Moderate_1, by = "confidence", decreasing = TRUE)
+inspect(head(ap_Moderate_1))
+ap_Moderate <- apriori(transactions, parameter = list(supp = 0.01, conf = 0.2), appearance = list(rhs = c("Moderate"), default = "lhs"), control = list(verbose = F))
+ap_Moderate <- sort(ap_Moderate, by = "confidence", decreasing = TRUE)
+inspect(head(ap_Moderate))
+plot(ap_Moderate_1, measure = c("support", "lift"), shading = "confidence", main = "Scatter Plot for 18536 Rules on Contributing Moderate Stolen Values")
+plot(ap_Moderate, measure = c("support", "lift"), shading = "confidence", main = "Scatter Plot for 31 Rules on Contributing Moderate Stolen Values")
+```
+
+When the parameters are set as 0.01 and 0.8 for support and confidence respectively, none of the rules is found, which implies that the rules are too restrictive. The strict threshold filters out most associations because it is hard to achieve such high confidence consistently. When the thresholds are set as 0.001 and 0.08 for support and confidence respectively, rare event are detected. Many rules are with perfect confidence (1) and the lifts are extremely high, which are more than 7. Higher lift means higher correlation. While confidence is perfect, the support is extremely low (only 36 transactions). It means the rule applies to very few cases and may lack generalizability. These could be anomalies or niche patterns. From the inspection, it is obvious that all high-confidence rules involve Coconino County. On the other hand, "Department/Discount Stores" and "Clothes/Furs" are frequent. Those stores may have those products commonly targeted for moderate-value thefts.
+
+However, since these rules apply to small subsets (extremely low support), there can be a data bias toward incidents and patterns. From the scatter plot, it gives the high number of rules generated which means the rules are not common and random in many cases. There should be an amendment on the parameter. When the thresholds are set as 0.01 and 0.2 for support and confidence respectively, there is a good balance generating decent number of rules with moderate reliability. Lift values more than 1 already indicate statistically significant and meaningful patterns. Confidence now is 20 – 28%, which is more realistic for predictive models. High-confidence rules (100%) from the earlier set were rare and too specific. More counts, higher support and lower lift indicate the rules are more generalizable and still have strong associations to the moderate stolen values. It is apparent that "Tools" have high support and confidence with lift > 2. It means that tools are usually the products and cargo items being stolen and they are grouped as moderate values. Rules involving “Not recovered” status consistently show a strong association with Moderate theft values. Unrecovered cargo tends to fall into the Moderate value range, possibly due to the nature of goods that are difficult to track, like tools. Additionally, "Cities 1,000,000 or over" also indicate the large cities with population over 1 million have a logistic security problem especially for the cargo theft valued at moderate level.
+
+### High Stolen Value
+
+```{r, warning = FALSE, message = FALSE}
+ap_High <- apriori(transactions, parameter = list(supp = 0.01, conf = 0.4), appearance = list(rhs = c("High"), default = "lhs"), control = list(verbose = F))
+ap_High <- sort(ap_High, by = "confidence", decreasing = TRUE)
+inspect(head(ap_High))
+plot(ap_High, measure = c("support", "lift"), shading = "confidence", main = "Scatter Plot for 50 Rules on Contributing High Stolen Values")
+```
+
+When the thresholds are set higher, none of the rules is found. Therefore, the support and confidence are set as 0.01 and 0.4 respectively. Based on the results, it shows that individual automobile thefts in the South Atlantic, even when recovered are highly likely to involve High-value cargo. There are geographical hotspots for South Atlantic and Maryland, which implies that those areas are high-risk zones for High-value cargo theft. Surprisingly, automobile is the common cargo item for high-value cargo thefts but they can possibly being recovered. Those victims are usually individual owners. From the scatter plot, the confidence and lift are maximum 0.75 and between 2.5 to 5.5, which is very strong association between antecedent and consequent. 
+
+### Very High Stolen Value
+
+```{r, warning = FALSE, message = FALSE}
+ap_Very_High <- apriori(transactions, parameter = list(supp = 0.005, conf = 0.08), appearance = list(rhs = c("Very High"), default = "lhs"), control = list(verbose = F))
+ap_Very_High <- sort(ap_Very_High, by = "confidence", decreasing = TRUE)
+inspect(head(ap_Very_High))
+plot(ap_Very_High, measure = c("support", "lift"), shading = "confidence", main = "Scatter Plot for 28 Rules on Contributing Very High Stolen Values")
+```
+
+From the rules generated, it shows that 25.86% (confidence) chance the victim type of the cargo theft is business and usually happens in Texas when the stolen value of the cargo item is over 50000 USD (Very High). Theft involving businesses in Texas is 6.19 (lift) times more likely to involve very high-value cargo compared to random theft events. Also, similar to Rule 1, but more geographically specific, adding the US broader region (West South Central), with the same support and confidence, it indicates strong correlation even when zooming out geographically. Not just Texas but thefts in the West South Central region who the victims are businesses they usually suffer from the loss of very high-valued cargo items. The entire region has similar risk of facing very-high-valued cargo thefts. The extremely high-valued cargo products owned by business face the security risk in Texas and even in West South Central region in US. The lift values of Rule 1 to Rule 3 are higher than the rest which implies the strong associations that are not random. When increasing thresholds, for example trying to capture rules that support apply to 1%, 2%, or more of the data, the algorithm cannot find any frequent itemsets that meet the thresholds. The theft of very high-valued cargo (more than 50000 USD) is rare, but when it happens, it has strong associations with specific factors like the businesses in Texas. Low-support rules are still valuable because they highlight specific high-risk scenarios even if they are not widespread.
+
+# Conclusion
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+process_rules <- function(rules, top_n = 5) {
+  rules_df <- as(rules, "data.frame")
+  top_rules_df <- rules_df %>% arrange(desc(confidence)) %>% head(top_n)
+  lhs_rhs <- strsplit(as.character(top_rules_df$rules), " => ")
+  lhs <- sapply(lhs_rhs, function(x) gsub("[{}]", "", x[1]))
+  rhs <- sapply(lhs_rhs, function(x) gsub("[{}]", "", x[2]))
+  data <- data.frame(
+    lhs = lhs,
+    rhs = rhs,
+    support = top_rules_df$support,
+    confidence = top_rules_df$confidence,
+    lift = top_rules_df$lift,
+    count = top_rules_df$count
+  ) %>%
+    separate_rows(lhs, sep = ",\\s*") %>%
+    mutate(rhs = gsub("[{}]", "", rhs))  # Clean rhs from curly braces
+  return(data)
+}
+
+low_data <- process_rules(ap_Low)
+moderate_data <- process_rules(ap_Moderate)
+high_data <- process_rules(ap_High)
+very_high_data <- process_rules(ap_Very_High)
+
+# Combine all processed data
+all_data <- bind_rows(
+  low_data %>% mutate(category = "Low"),
+  moderate_data %>% mutate(category = "Moderate"),
+  high_data %>% mutate(category = "High"),
+  very_high_data %>% mutate(category = "Very High")
+)
+sankey_links <- all_data %>% group_by(lhs, rhs) %>% summarize(value = sum(confidence), .groups = "drop")
+nodes <- data.frame(name = unique(c(sankey_links$lhs, sankey_links$rhs)))
+nodes$id <- seq(0, nrow(nodes) - 1)
+sankey_links <- sankey_links %>%
+  left_join(nodes, by = c("lhs" = "name")) %>%
+  rename(source = id) %>%
+  left_join(nodes, by = c("rhs" = "name")) %>%
+  rename(target = id) %>%
+  select(source, target, value)
+sankeyNetwork(Links = sankey_links, Nodes = nodes, Source = "source", Target = "target", Value = "value", NodeID = "name", fontSize = 12, nodeWidth = 30)
+```
+
+The above Sankey diagram provides the flow of relationships between items, especially when dealing with rule-based outputs from Apriori association rules. They are clustered into 4 levels of the stolen value of the cargo item. The flow generally goes from the cause or condition (LHS) to the outcome (RHS), which are the factors resulting the different stolen values. In the diagram, the thicker the link, the stronger the relationship determined by the confidence value investigated previously. A thicker line means a higher confidence to the specific stolen value while a thinner line shows a weaker association. Some nodes connect to the same RHS such as "Not Recovered" and "Individual". It indicates that different conditions can lead to the same outcome. We can see that the links for "Very High" value and "Moderate" value are thin but for the rest are thick. It is common to find out the general rules for "High" and "Low" valued cargo theft but difficult to predict and discover the hidden patterns for the thefts "Luxury" cargo items and "Moderate" cargo items.
+
+To conclude, ECLAT firstly is used to identify frequent itemsets in cargo theft incidents. The initial findings show significant items distributed to the association rules such as “Individual” victims associated with “Low” and "High" stolen values, and, “Not Recovered” items associated with "Low" and "Moderate" stolen values. These patterns indicate that low-values cargo thefts are less likely to result in recovery and typically involve individual victims, and high-valued cargo thefts sometimes happens in South Atlantic area and individual victims suffer it. Closed itemsets are explored which represent unique and highly specific patterns in the data but these itemsets occur rarely with extremely low support. 
+
+Apriori algorithm is used with varying support and confidence thresholds to generate association rules. Cargo thefts involving individuals and theft from motor vehicles tend to result in low stolen values, while large cities with more than 1 million population are associated with moderate-value thefts and the property are often tools. Some specific items like automobiles and specific ways to conduct thefts like using motor vehicles seem common in cargo thefts. Scatter plots are generated to assist the visualization of the relationships between support, lift, and confidence which provides insights into the strength of the association rules between the antecedents and the outcomes. The patterns for high and very high stolen values are discovered that specific locations like Texas and West South Central, and victim types like businesses are highly correlated with these extreme theft incidents. It is important to be noted that business entities are more likely to be involved in very high-valued cargo thefts, especially in Texas or even in West South Central US region. Despite the fact that the support is low, but it does not mean low importance. 
+
+In fact, for cargo theft, the rarest patterns might be the most dangerous because they indicate targeted, organized crime rather than random thefts. It suggests organized, targeted cargo theft activities in these areas, highlighting a systemic issue in general cargo thefts. It is possibly due to valuable cargo routes or weak security measures. For amelioration of the cargo thefts in specific regions, there should be a deliberation of stricter security protocols and coordinated efforts with law enforcement in these areas. The association rules results can help prioritize areas for intervention such as focusing on certain cargo item categories or regions with a high likelihood of thefts.
+
+# Limitations and Concerns
+
+Cargo theft does not follow a uniform pattern across the entire dataset. Actually, the diversity of theft scenarios makes it hard for any single combination of factors to occur frequently enough to meet a high support threshold. There can be association rule bias because of overfitting just like the association rules mining on "Moderate" stolen value. The use of parameters like support, confidence, and lift could lead to overfitting of the data. Overfitting occurs when rules capture too specific patterns that may not generalize well. Furthermore, setting thresholds for support and confidence may lead to overlooking important relationships or generating too many weak rules. For example, the super low support threshold for mining the rules for "Moderate" stolen values could yield numerous rare but interesting patterns, but these might not be significant enough, and even difficult to make reasonable interpretations.
+
+
+
+
+
+[^1]: Cargo Theft Definition - https://www.fbi.gov/investigate/transnational-organized-crime/cargo-theft
+[^2]: Classification of Age Groups Based on Facial Features - https://www.researchgate.net/publication/228404297_Classification_of_Age_Groups_Based_on_Facial_Features
+[^3]: Crime Analysis Based on Association Rules Using Apriori Algorithm - https://www.researchgate.net/publication/321338934_Crime_Analysis_Based_on_Association_Rules_Using_Apriori_Algorithm
+[^4]: APPLICATION FOR ANALYSIS AND PREDICTION OF CRIME DATA USING DATA MINING - http://www.iraj.in/journal/journal_file/journal_pdf/3-253-14650168849-12.pdf
+[^5]: Association Rules Mining in Crime Data Analysis - https://ieeexplore.ieee.org/document/10712467
+[^6]: Prediction of Criminal Suspects Based on Association Rules and Tag Clustering - https://www.scirp.org/journal/paperinformation?paperid=91425
+

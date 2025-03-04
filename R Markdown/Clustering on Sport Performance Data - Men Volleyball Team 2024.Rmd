@@ -1,0 +1,395 @@
+---
+title: "Clustering on Sport Performance Data - Men Volleyball Team 2024"
+author: "Tsoi Kwan Ma"
+date: "2025-01-21"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      toc_collapsed: true
+    toc_depth: 5
+    number_sections: false
+    theme: readable
+---
+
+``` {r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+``` {r, message = FALSE, warning = FALSE}
+library(tidyverse) 
+library(dendextend) 
+library(hopkins) 
+library(cluster)
+library(gridExtra) 
+library(Rtsne)
+library(fpc)
+library(factoextra) 
+library(flexclust)
+library(ggplot2)
+library(fpc)
+library(dbscan)
+library(clusterSim) 
+```
+
+# Introduction
+
+Volleyball Nations League (VNL), also called FIVB, is an annual international volleyball competition contested by the senior national teams. It is the biggest competition in volley world each and it draws attention from many volleyball connoisseurs every year. The paper aims to cluster the men volleyball players into different groups, based on their capability statistics on blocking, attacking, receiving, etc, throughout the year 2024. By analyzing key performance metrics, it is hoped to uncover meaningful patterns and group players with similar playing styles and strengths. The results may also possibly provide a reference basis for team strategies and tactical formulations. Additionally, they can also discover potential trends to help a team stay competitive, and identify and analyze their competitors.
+
+``` {r, echo = FALSE, results = FALSE}
+setwd("/Users/matsoikwan/Library/Mobile Documents/com~apple~CloudDocs/University of Warsaw/Unsupervised Learning/Final Assignments/VNL")
+attackers <- read.csv("VNL2024Men_Attackers.csv")
+blockers <- read.csv("VNL2024Men_Blockers.csv")
+diggers <- read.csv("VNL2024Men_Diggers.csv")
+players <- read.csv("VNL2024Men_Players.csv")
+receivers <- read.csv("VNL2024Men_Receivers.csv")
+servers <- read.csv("VNL2024Men_Servers.csv")
+setters <- read.csv("VNL2024Men_Setters.csv")
+```
+
+# Datasets Selection, Preprocessing and Brief Reviews from Related Research
+
+The dataset used for this project was sourced from [Kaggle](https://www.kaggle.com/datasets/jonathanpmoyer/vnl-2024-mens-stats/data). To ensure the authenticity and accuracy of the data, the dataset retreived was compared to publicly available performance statistics from the [official VNL website](https://en.volleyballworld.com/volleyball/competitions/volleyball-nations-league/2024/statistics/). Unfortunately the raw data cannot be directly downloaded from the official website, the mannual comparison among them helped validate the consistency and reliability of the dataset and they are basically the same, which can confirm it represents a credible source for analysis. Datasets are imported and combined together into 1 dataset. It contains a wealth of men player ability and performance information. There are 20 columns should be removed because the columns inside the dataset provide similar and duplication of information. For instance, "p_Attack" and "Tot_Attack" likely represents the percentage of successful attacks relative to total attacks. Additionally, some of the rows with missing values (around 3.9% of the whole dataset) are also removed because filling in the missing values will affect the shape of the dataset, while the performance statistics of each volleyball players is independent. The dataset is tried to be simplified to keep only the most meaningful features and attributes.
+
+Referring historical research paper, multiple clustering algorithms, for example K-means[^1], Partitioning around Medoids (PAM), Ward’s method[^2], Complete linkage, are always used when comes to clustering sports team players based on performance data. They are usually about football (FIFA) and basketball (NBA) performance, but seldom talks about volleyball. It comes to a chance to explore the relations between volleyball players' performance and the results of competitions. In this paper, the players will be grouped based on different algorithms, which are Hierarchical Clustering, DBSCAN, K-Means, and PAM, to reveal similarities and dissimilarities. Through investigating the quality of each clustering method, ultimately 1 algorithm will be chosen for clustering and it is expected to reach the expectations and goals of this paper.
+
+``` {r, echo = FALSE, results = FALSE}
+final <- list(attackers, blockers, diggers, players, receivers, servers, setters)
+final <- Reduce(function(x, y) merge(x, y, by = c("Name", "Team"), all = TRUE), final)
+str(final)
+cols_to_remove <- c("p_Attack", "Tot_Attack", "MAvg_Attack", "p_Block", "Tot_Block", "MAvg_Block", 
+                    "p_Dig", "T_Dig", "MAvg_Dig", "p_Receive", "Tot_Receive", "MAvg_Receive", "p_Serve", 
+                    "Tot_Serve", "MAvg_Serve", "p_Set", "Tot_Set", "MAvg_Set", "Height", "Birth_Year")
+final <- final[, !(colnames(final) %in% cols_to_remove)]
+final$Name <- make.unique(final$Name)
+rownames(final) <- final$Name
+final <- final[, -which(names(final) == "Name")]
+str(final)
+print(sort(colSums(is.na(final)) / nrow(final) * 100))
+final <- final[complete.cases(final), ]
+print(sort(colSums(is.na(final)) / nrow(final) * 100))
+data <- final[, sapply(final, is.numeric)]
+summary(data)
+```
+
+## Attributes Information and Meanings
+
+* Pt_Attack: How many points scored by attacking
+* Err_Attack: How many errors made while attacking (leading to a point for the opposing team)
+* Att_Attack: Unsuccessful attempts at attacking which did not end the play
+* Tot_Attack: Total attacks made
+* Pt_Block: How many points scored by blocks (such as block kills)
+* Err_Block: How many block errors (resulting in a point for the opposing team)
+* Rebounds: How many blocks were safely recovered by the opposing team (play continued)
+* Tot_Block: Total blocks
+* Sf_Dig: Successful digs
+* Err_Dig: Errors made while digging
+* Receptions: Receiving a free ball as opposed to a spike or serve
+* T_Dig: Total digs
+* Sf_Receive: Successful serves received
+* Err_Receive: Unsuccessful serves received leading to a point for the opposing team
+* Att_Receive: Unsuccessful attempts at receiving but did not end the play
+* Tot_Receive: Total receives made
+* Pt_Serve: Points scored off a serve (service aces)
+* Err_Serve: Points lost off a serve (served out or into the net)
+* Att_Serve: All other serves (not aces nor errors)
+* Tot_Serve: Total number of serves
+* Sf_Set: Successful setting a ball
+* Err_Set: Unsuccessful set leading to a point for the opposing team
+* Att_Set: Unsuccessful attempts at setting but did not end the play
+* Tot_Set: Total sets made
+
+# Methodology
+
+``` {r}
+set.seed(123)
+row_names <- rownames(data)
+data_z <- as.data.frame(lapply(data, scale)) # Z-score standardization
+rownames(data_z) <- row_names
+hopkins(data_z)
+k_range <- 2:10
+hopkins_values <- numeric(length(k_range))
+for (i in seq_along(k_range)) { # Compute Hopkins statistic for each k
+  k <- k_range[i]
+  result <- get_clust_tendency(data_z, k, graph = FALSE)
+  hopkins_values[i] <- result$hopkins_stat
+}
+plot(k_range, hopkins_values, type = "b", pch = 16, col = "blue", 
+     xlab = "Number of Clusters", ylab = "Hopkins Statistic", 
+     main = "Hopkins Statistic for Different Number of Clusters")
+```
+
+The hopkins statistic is close to 1 which means that the dataset is highly likely to contain meaningful clusters since it shows the high degree of clustering tendency in the dataset. It naturally has well-defined clusters. We also can see from the plot that 2, 4, and 7 clusters for the dataset provide better hopkins scores. These numbers can also be a reference for the following hierarchical clustering, K-Means clustering and PAM clustering.
+
+## Hierarchical Clustering (Connectivity-based)
+
+### Agglomerative Approach
+
+``` {r}
+method <- c( "average", "single", "complete", "ward")
+names(method) <- c( "average", "single", "complete", "ward")
+agglomerative_coefficient <- function(x) {
+  agnes(data_z, method = x)$ac
+}
+map_dbl(method, agglomerative_coefficient)
+```
+
+After finding the agglomerative coefficients of different methods in hierarchical clustering, we can see that the methods for linkage, complete and ward should be used for hierarchical clustering because the values closer to 1 which suggest strong clustering structure. Additionally, the high divisive coefficient calculated below also indicates a good separation of clusters.
+
+``` {r}
+hc_elbow_complete <- fviz_nbclust(data_z, FUN = hcut, method = "wss", hcut_args = list(method = "complete"))
+hc_sil_complete <- fviz_nbclust(data_z, FUN = hcut, method = "silhouette", hcut_args = list(method = "complete")) 
+hc_gap_complete <- fviz_gap_stat(clusGap(data_z, FUN = hcut, nstart = 25, K.max = 10, B = 50, hcut_args = list(method = "complete"))) 
+hc_elbow_ward <- fviz_nbclust(data_z, FUN = hcut, method = "wss", hcut_args = list(method = "ward.D"))
+hc_sil_ward <- fviz_nbclust(data_z, FUN = hcut, method = "silhouette", hcut_args = list(method = "ward.D"))
+hc_gap_ward <- fviz_gap_stat(clusGap(data_z, FUN = hcut, nstart = 25, K.max = 10, B = 50, hcut_args = list(method = "ward.D")))
+grid.arrange(hc_elbow_complete, hc_elbow_ward, hc_sil_complete, hc_sil_ward, hc_gap_complete, hc_gap_ward,
+  ncol = 2, top = "Comparison of Elbow, Silhouette, Gap: Complete (Left) vs. Ward (Rgiht)")
+```
+
+Based on the plots, the optimal numbers of clusters from hierarchical clustering are suggested to be 4 (elbow and silhouette) and 9 (gap statistics) respectively. In such case, we will try to use "4" as the optimal clusters.
+
+``` {r}
+hc_ward <- agnes(data_z, method = "ward")
+hc_ward_group <- cutree(hc_ward, k = 4) # Cut tree into 4 groups
+pltree(hc_ward, cex = 0.6, hang = -1, main = "Dendrogram - Agnes - Ward")
+rect.hclust(hc_ward, k = 4, border = 2:5)
+
+hc_complete <- agnes(data_z, method = "complete")
+pltree(hc_complete, cex = 0.6, hang = -1, main = "Dendrogram - Agnes - Complete")
+rect.hclust(hc_complete, k = 4, border = 2:5)
+```
+
+### Divisive Approach
+
+```{r}
+hc_diana <- diana(data_z)
+hc_diana$dc # Divise coefficient
+hc_diana_group <- cutree(hc_diana, k = 4) # Cut tree into 4 groups
+pltree(hc_diana, cex = 0.6, hang = -1, main = "Dendrogram - Diana")
+rect.hclust(hc_diana, k = 4, border = 2:5)
+
+tanglegram(as.dendrogram (hc_ward), as.dendrogram (hc_diana))
+```
+
+From the above analysis, we can see that by hierarchical clustering, it suggests that 4 clusters can be the optimal. But it may not be the best way to cluster since the sizes of each cluster are not similar. On the other hand, by comparing the two dendrograms generated by agglomerative and divisive approaches, the lines between two dendrograms are crossing a lot, which implies that the different approaches for hierarchical clustering will possibly generate different results.
+
+## DBSCAN
+
+``` {r, echo = FALSE, results = FALSE}
+sum(duplicated(data_z))
+data_z_no_duplicates <- data_z[!duplicated(data_z), ]
+sum(duplicated(data_z_no_duplicates))
+```
+
+``` {r}
+par(mfrow = c(2, 2))
+db_eps_2 <- dbscan::kNNdistplot(data_z_no_duplicates, k = 2)
+abline(h = 3.6, lty = 2)
+db_eps_3 <- dbscan::kNNdistplot(data_z_no_duplicates, k = 3)
+abline(h = 4, lty = 2)
+db_eps_4 <- dbscan::kNNdistplot(data_z_no_duplicates, k = 4)
+abline(h = 4, lty = 2)
+db_eps_5 <- dbscan::kNNdistplot(data_z_no_duplicates, k = 5)
+abline(h = 4.2, lty = 2)
+par(mfrow = c(1, 1))
+```
+
+``` {r}
+dbscan <- fpc::dbscan(data_z_no_duplicates, eps = 4, MinPts = 2)
+print(dbscan)
+dbscan <- fpc::dbscan(data_z, eps = 4, MinPts = 5)
+print(dbscan)
+dbscan <- fpc::dbscan(data_z_no_duplicates, eps = 2, MinPts = 3.3)
+print(dbscan)
+```
+
+In the above cases, regardless of setting k = 2, 3, 4, or 5, all the plots suggests eps is around 4. However, when DBSCAN was run with eps = 4 and MinPts = 2, the result is 1 cluster. With eps = 2 and MinPts = 3.3, DBSCAN is suggesting 3 clusters. It could mean that the lower eps allows the algorithm to detect more meaningful local densities and separate the data into 3 groups. Therefore, after testing multiple values, in terms of separation of clusters, 2 eps is decided to be used to group the data depending on the density.
+
+### PCA for Visualization of DBSCAN Clustering
+
+``` {r}
+pca_dbscan <- prcomp(data_z_no_duplicates, scale. = TRUE)
+cluster_dbscan <- data.frame(pca_dbscan$x[, 1:2], Cluster = as.factor(dbscan$cluster))
+ggplot(cluster_dbscan, aes(x = PC1, y = PC2, color = Cluster)) +
+  geom_point(size = 3, alpha = 0.8) +
+  theme_minimal() + theme(panel.grid = element_blank()) +
+  labs(title = "DBSCAN Clustering Visualized by PCA",
+       x = "Principal Component 1",
+       y = "Principal Component 2")
+```
+
+### t-SNE for Visualization of DBSCAN Clustering
+
+``` {r, results = FALSE}
+tsne_dbscan <- Rtsne(data_z_no_duplicates, dims = 2, perplexity = 30, verbose = TRUE, max_iter = 1000)
+```
+
+``` {r}
+colnames(tsne_dbscan$Y) <- c("tSNE1", "tSNE2")
+tsne_data_dbscan <- data.frame(tsne_dbscan$Y, Cluster = as.factor(dbscan$cluster))
+ggplot(tsne_data_dbscan, aes(x = tSNE1, y = tSNE2, color = Cluster)) +
+  geom_point(size = 3, alpha = 0.8) +
+  theme_minimal() + theme(panel.grid = element_blank()) +
+  labs(title = "DBSCAN Clustering Visualized by t-SNE", x = "t-SNE Dimension 1", y = "t-SNE Dimension 2")
+
+count(data_z_no_duplicates[dbscan$cluster == 0, ]) # Extract noise points
+```
+
+Noise points (so-called outliers) are assigned to cluster 0 which indicates that they do not belong to any of the main clusters identified by the algorithm. It is not within the eps distance of enough other points to form a dense region. The data points from cluster 0 are identified as not part of any meaningful clusters (either cluster 1, 2, and 3).
+
+From PCA and t-SNE, they all show 3 clusters and cluster 0 is recongnized as unimportant data points. In term of cluster seperations, it is apparent that the number of data points in different clusters are not really even and not well-divided. 64 data points are treated as noise / outliers and they are not assigned to any cluster, which this significant number of points might be important for analysis. Since DBSCAN identifies clusters based on density. If certain regions in the data have lower point density, DBSCAN might fail to form clusters and label them as noise. Furthermore, DBSCAN also detects duplicates and is unable to allocate them to a cluster. Therefore, there will be a potential scrutiny of loss of valuable data and unrepresentation of clusters. DBSCAN in such case is not suitable for carry out clustering and provide critical insights. In the following section, centroid-based clustering algorithms will be conducted.
+
+## K-Means and PAM
+
+First and foremost, by using the "silhouette", "elbow" and "gap-statistics" methods, the optimal numbers of clusters for K-means and PAM are suggested to be 4, 6, and 9. 
+
+``` {r}
+kmeans_sil <- fviz_nbclust(data_z, FUNcluster = stats::kmeans, method = "silhouette")
+pam_sil <- fviz_nbclust(data_z, FUNcluster = cluster::pam, method = "silhouette")
+kmeans_wss <- fviz_nbclust(data_z, FUNcluster = stats::kmeans, method = "wss")
+pam_wss <- fviz_nbclust(data_z, FUNcluster = cluster::pam, method = "wss")
+kmeans_gap <- fviz_nbclust(data_z, FUNcluster = stats::kmeans, method = "gap_stat")
+pam_gap <- fviz_nbclust(data_z, FUNcluster = cluster::pam, method = "gap_stat")
+grid.arrange(kmeans_wss, pam_wss, kmeans_sil, pam_sil, kmeans_gap, pam_gap, ncol = 2, top="K-Means (Left) & PAM (Right)")
+```
+
+``` {r, message = FALSE, warning = FALSE}
+randIndex(cclust(data_z, 4, dist="euclidean"), cclust(data_z, 6, dist="euclidean"))
+randIndex(cclust(data_z, 4, dist="euclidean"), cclust(data_z, 9, dist="euclidean"))
+comPart(cclust(data_z, 4, dist="euclidean"), cclust(data_z, 6, dist="euclidean"))
+comPart(cclust(data_z, 4, dist="euclidean"), cclust(data_z, 9, dist="euclidean"))
+```
+
+According to the rand index, the clustering solutions are very similar (with high ARI, RI, J, and FM) for 4 clusters and 6 clusters. The clustering solutions are less similar (with a noticeable drop in ARI and other metrics) for 4 clusters and 9 clusters.
+
+``` {r, results = FALSE}
+create_fviz_silhouette <- function(sil_object, method, k) {
+  avg_width <- summary(sil_object)$avg.width
+  fviz_silhouette(sil_object) +
+    ggtitle(paste(method, "(k =", k, ")")) +
+    labs(subtitle = paste("Avg Silhouette Width:", round(avg_width, 3)))
+}
+
+p1 <- create_fviz_silhouette(silhouette(kmeans(data_z, 4)$cluster, dist(data_z)), "K-Means", 4)
+p2 <- create_fviz_silhouette(silhouette(pam(data_z, 4)$cluster, dist(data_z)), "PAM", 4)
+p3 <- create_fviz_silhouette(silhouette(kmeans(data_z, 6)$cluster, dist(data_z)), "K-Means", 6)
+p4 <- create_fviz_silhouette(silhouette(pam(data_z, 6)$cluster, dist(data_z)), "PAM", 6)
+p5 <- create_fviz_silhouette(silhouette(kmeans(data_z, 9)$cluster, dist(data_z)), "K-Means", 9)
+p6 <- create_fviz_silhouette(silhouette(pam(data_z, 9)$cluster, dist(data_z)), "PAM", 9)
+```
+``` {r}
+grid.arrange(p1, p2, p3, p4, p5, p6, ncol = 2)
+
+kmeans_shadow <- cclust(data_z, 4, dist = "euclidean") # Shadow statistics for K-Means
+shadow(kmeans_shadow)
+plot(shadow(kmeans_shadow))
+```
+
+While "4 clusters" is consistently suggested by "elbow" and "silhouette", "gap-statistics" suggests 6 clusters and 9 clusters for K-means and PAM respectively. In such case, the investigation of average silhouette widths is crucial for comparing the quality of different clusters (4, 6, and 9) when using K-emans and PAM. We can see that applying K-means for 4 clusters usually has the better result. On the other hand, the shadow statistics are generally high, which proves that the 4 clusters can be well-separated and well-defined.
+
+### PCA for Visualization of K-means Clustering
+
+```{r}
+pca_kmeans <- prcomp(data_z, scale = TRUE)
+kmeans <- kmeans(data_z, 4)
+pca_with_clusters <- data.frame(pca_kmeans$x[, 1:2], Cluster = as.factor(kmeans$cluster))
+ggplot(pca_with_clusters, aes(x = PC1, y = PC2, color = Cluster)) +
+  geom_point(size = 3, alpha = 0.8) +
+  labs(title = "K-Means Clustering Visualized by PCA", x = "Principal Component 1", y = "Principal Component 2") + 
+  theme_minimal() + theme(panel.grid = element_blank())
+```
+
+From the visualization of PCA for K-means, we can see that the data points in clusters are more evenly distributed, compared to DBSCAN. However, there is significant overlap between clusters and data points which is hard to visually distinguish them. Some clusters and data points are also spread out and it indicates that PCA may not be capturing non-linear relationships in the data.
+
+### t-SNE for visualization of K-means Clustering
+
+``` {r}
+tsne_result <- Rtsne(data_z, dims = 2, perplexity = 30, check_duplicates = FALSE)
+tsne_data_kmeans <- data.frame(tsne_result$Y)
+colnames(tsne_data_kmeans) <- c("TSNE1", "TSNE2")
+tsne_kmeans <- kmeans(tsne_data_kmeans, 4)
+tsne_data_kmeans$cluster <- factor(tsne_kmeans$cluster)
+ggplot(tsne_data_kmeans, aes(x = TSNE1, y = TSNE2, color = cluster)) +
+  geom_point(size = 3, alpha = 0.8) +
+  labs(title = "K-Means Clustering Visualized by t-SNE", x = "t-SNE Dimension 1", y = "t-SNE Dimension 2") +
+  theme_minimal() + theme(panel.grid = element_blank())
+
+index.DB(pca_kmeans$x[, 1:2], kmeans$cluster)$DB
+index.DB(tsne_result$Y, tsne_kmeans$cluster)$DB
+```
+
+From the visualization of t-SNE for K-means, we can see that the data points and clusters are more distinct and less overlapping which is easier to interpret visually. T-SNE focuses on local relationships and it is cluster-focused which helps preserve local cluster structure. The points within clusters are more concentrated and it captures underlying structures better, especially for non-linear separations. Besides, by comparing the davies-bouldin index of PCA and t-SNE, t-SNE can provide better compactness and separation in clusters because lower values are better. Thus, from the perspectives of cluster separation and clarity, t-SNE can distinguish between clusters visually, and the reduction of overlap and concentration of points helps highlight distinct groupings which is beneficial for further exploratory analysis. Now, let's try to add the players's names to the clusters to see how they are grouped and who they are .
+
+## Observations and Analysis
+
+``` {r, echo = FALSE}
+tsne_data_kmeans$player_name <- rownames(data_z)
+ggplot(tsne_data_kmeans, aes(x = TSNE1, y = TSNE2, color = cluster)) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_text(aes(label = player_name), vjust = -0.5, hjust = 0.5, size = 3) +
+  labs(title = "K-Means Clustering Visualized by t-SNE", x = "t-SNE Dimension 1", y = "t-SNE Dimension 2") +
+  theme_minimal() + theme(panel.grid = element_blank())
+
+for (cluster in unique(tsne_data_kmeans$cluster)) {
+  players_in_cluster <- tsne_data_kmeans$player_name[tsne_data_kmeans$cluster == cluster]
+  cat(paste0("Cluster ", cluster, ": ", paste(players_in_cluster, collapse = ", "), "\n"))
+  cat("\n")
+}
+
+data$cluster <- tsne_kmeans$cluster
+groupBWplot <- function(data, group_col, value_cols, custom_titles) {
+  par(mfrow = c(2, 3))  
+  for (value_col in value_cols) {
+    title <- ifelse(value_col %in% names(custom_titles), custom_titles[[value_col]], value_col)
+    boxplot(data[[value_col]] ~ data[[group_col]], 
+            main = paste(title, "by Cluster"),  # Title for the boxplot
+            xlab = "Cluster", ylab = title,    # X and Y axis labels
+            col = rainbow(length(unique(data[[group_col]]))))  # Color based on clusters
+  }
+  par(mfrow = c(1, 1))  
+}
+
+custom_titles <- c("Pt_Attack" = "Successful Attack", "Pt_Block" = "Successful Block",
+  "Sf_Dig" = "Successful Dig", "Sf_Receive" = "Successful Reception",
+  "Pt_Serve" = "Successful Serve", "Sf_Set" = "Successful Set"
+)
+
+groupBWplot(data, group_col = "cluster", 
+            value_cols = c("Pt_Attack", "Pt_Block", "Sf_Dig", "Sf_Receive", "Pt_Serve", "Sf_Set"),
+            custom_titles = custom_titles)
+```
+
+From the grouped plots results above, we can see that there are 4 types of group of players clustered, based on their performance.
+
+* The first category represents a group of players who are relatively and excellently balanced in terms of block, receive, attack and other characteristics. 
+* The second category represents a group of players who are good at scoring, which are block and attack and serve. 
+* The third category represents a group of defensive players with outstanding performance in digging and reception. 
+* The fourth category represents a group of organizational players with capability in assists, such as setting the ball. However, they are also more mediocre in other characteristic generally.
+
+Right now, we can try to find the top 10 players in each cluster based on their total successful scores from 6 characteristics.
+
+``` {r, echo = FALSE}
+final$cluster <- tsne_kmeans$cluster
+final$total_sf_pt <- rowSums(data[c("Pt_Attack", "Pt_Block", "Sf_Dig", "Sf_Receive", "Pt_Serve", "Sf_Set")])
+head(final[final$cluster == 1, c("Team", "Position", "total_sf_pt")][order(-final[final$cluster == 1, "total_sf_pt"]), ], 10)
+head(final[final$cluster == 2, c("Team", "Position", "total_sf_pt")][order(-final[final$cluster == 2, "total_sf_pt"]), ], 10)
+head(final[final$cluster == 3, c("Team", "Position", "total_sf_pt")][order(-final[final$cluster == 3, "total_sf_pt"]), ], 10)
+head(final[final$cluster == 4, c("Team", "Position", "total_sf_pt")][order(-final[final$cluster == 4, "total_sf_pt"]), ], 10)
+```
+
+# Conslusion
+
+K-means is used for clustering after comparing the outcomes and effects with hierarchical clustering, DBSCAN, and PAM. From the lists above and also based on the obervations made after K-Means clustering, we can observe the below circumstances. The players from the first category usually have extraordinary performance in almost all aspects. They are the ace and main scorer of a team. Their positions in a team are basically opposite hitter (O) and outside hitter (OH). Their responsibilities include hitting the balls, passing in serve receive, playing defense, and blocking. Therefore, it is understandable that they achieved high points on all features except setting balls. The players from the second category are mostly middle blocker (MB). They are the team’s best blockers. They are usually not good at setting balls, therefore MB get the fewest points in successful set but have the better attack points. The players from third category are defensive and serve-receive specialists. Referring the data retrieved, they are all Liberos (L). Liberos are not allowed to attack the balls and set the balls in front of the net. They usually play as a "back-up" or "support" for a team. In such case, the points successful dig is comparatively high with other clusters. The players from the forth category are mainly setters (S). The setter is actually the "decision-maker" of a team and is in charge of leading the strike. They are responsible to set a ball up for one of the hitters to attack during the second pass. Consequently, compared to other clusters, they have extremely low points in attack. Since the clusters identified can be able to match to real-world scenarios and are reasonably explainable, this is a strong indication of the validity and relevance of the clustering results.
+
+# Limitations and Concerns
+
+There is a fun fact that many top players in each cluster are from Slovenia (SLO). They are able to reach high successful points in different perspectives. It may imply that the overall strengths from that team are relatively superior than others and can be strong opponents. Yet, according to the [VNL national men team ranking](https://en.volleyballworld.com/volleyball/world-ranking/men), Poland (POL) is the first and Slovenia (SLO) ranks forth. From the clustering results, non team players from Poland is on the top 10 list. It is believed that there should be some additional information we have to consider when clustering. In such case, it is not doubtful that this study only conducted clustering based on given and selected characteristics and may have ignored the impact of other important characteristics or factors on players. In addition, there may also be certain biases in the selection of data samples. For more comprehensive and accurate research results, a broader and representative data set should be needed.
+
+
+
+
+
+
+[^1]: Using K-means Clustering to Create Training Groups for Elite American Football Student-athletes Based on Game Demands - https://journals.aiac.org.au/index.php/IJKSS/article/view/6092
+[^2]: Clustering of football players based on performance data and aggregated clustering validity indexes - https://www.degruyter.com/document/doi/10.1515/jqas-2022-0037/html
